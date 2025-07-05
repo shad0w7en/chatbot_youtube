@@ -11,8 +11,13 @@ class YouTubeChatBot {
             clientSecret: process.env.YOUTUBE_CLIENT_SECRET,
             channelId: process.env.YOUTUBE_CHANNEL_ID,
             botName: process.env.BOT_NAME || 'GameBuddy',
-            ownerUsername: process.env.OWNER_USERNAME || '', // Your YouTube username
-            redirectUri: "urn:ietf:wg:oauth:2.0:oob"
+            ownerUsername: process.env.OWNER_USERNAME || '',
+            redirectUri: "urn:ietf:wg:oauth:2.0:oob",
+            // Streaming schedule (24-hour format)
+            streamingHours: {
+                start: parseInt(process.env.STREAM_START_HOUR) || 18, // 6 PM
+                end: parseInt(process.env.STREAM_END_HOUR) || 23     // 11 PM
+            }
         };
 
         // Bot personality responses
@@ -71,9 +76,58 @@ class YouTubeChatBot {
         this.videoId = null;
         this.streamCheckInterval = null;
         this.lastResponseTime = 0;
+        this.dailyQuotaUsed = 0;
+        this.quotaResetTime = this.getNextQuotaReset();
         
         this.setupOAuth();
         this.setupWebServer();
+    }
+
+    // Get next quota reset time (midnight Pacific Time)
+    getNextQuotaReset() {
+        const now = new Date();
+        const tomorrow = new Date(now);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        tomorrow.setHours(0, 0, 0, 0);
+        return tomorrow;
+    }
+
+    // Check if we're in streaming hours
+    isStreamingTime() {
+        const now = new Date();
+        const hour = now.getHours();
+        const { start, end } = this.config.streamingHours;
+        
+        if (start <= end) {
+            return hour >= start && hour <= end;
+        } else {
+            // Handle overnight streaming (e.g., 22:00 to 02:00)
+            return hour >= start || hour <= end;
+        }
+    }
+
+    // Check quota before API call
+    canMakeApiCall(cost) {
+        const now = new Date();
+        
+        // Reset quota counter if it's a new day
+        if (now >= this.quotaResetTime) {
+            this.dailyQuotaUsed = 0;
+            this.quotaResetTime = this.getNextQuotaReset();
+            console.log('🔄 Daily quota reset');
+        }
+        
+        return (this.dailyQuotaUsed + cost) <= 9500; // Keep 500 units buffer
+    }
+
+    // Track quota usage
+    trackQuotaUsage(cost) {
+        this.dailyQuotaUsed += cost;
+        console.log(`📊 Quota used: ${this.dailyQuotaUsed}/10000 units`);
+        
+        if (this.dailyQuotaUsed > 8000) {
+            console.warn('⚠️ Approaching quota limit!');
+        }
     }
 
     setupWebServer() {
@@ -89,6 +143,11 @@ class YouTubeChatBot {
                 botName: this.config.botName,
                 isMonitoring: this.isRunning,
                 currentStream: this.videoId || 'none',
+                quotaUsed: this.dailyQuotaUsed,
+                quotaLimit: 10000,
+                quotaResetTime: this.quotaResetTime.toISOString(),
+                streamingHours: this.config.streamingHours,
+                isStreamingTime: this.isStreamingTime(),
                 uptime: process.uptime(),
                 timestamp: new Date().toISOString()
             }, null, 2));
@@ -137,8 +196,19 @@ class YouTubeChatBot {
         google.options({ auth: this.oauth2Client });
     }
 
-    // Check if currently streaming
+    // Check if currently streaming (QUOTA: 100 units)
     async checkIfStreaming() {
+        // Don't check if quota is low or outside streaming hours
+        if (!this.canMakeApiCall(100)) {
+            console.log('⚠️ Skipping stream check - quota limit reached');
+            return false;
+        }
+        
+        if (!this.isStreamingTime()) {
+            console.log('😴 Outside streaming hours, skipping check');
+            return false;
+        }
+
         try {
             const response = await axios.get('https://www.googleapis.com/youtube/v3/search', {
                 params: {
@@ -150,6 +220,8 @@ class YouTubeChatBot {
                     maxResults: 1
                 }
             });
+
+            this.trackQuotaUsage(100); // Track quota usage
 
             if (response.data.items && response.data.items.length > 0) {
                 const newVideoId = response.data.items[0].id.videoId;
@@ -176,14 +248,21 @@ class YouTubeChatBot {
         }
     }
 
-    // Get live chat ID from video
+    // Get live chat ID from video (QUOTA: 1 unit)
     async getLiveChatId() {
+        if (!this.canMakeApiCall(1)) {
+            console.log('⚠️ Cannot get live chat ID - quota limit reached');
+            return false;
+        }
+
         try {
             const response = await this.youtube.videos.list({
                 part: ['liveStreamingDetails'],
                 id: [this.videoId],
                 key: this.config.apiKey
             });
+
+            this.trackQuotaUsage(1);
 
             if (response.data.items && response.data.items.length > 0) {
                 const liveChatId = response.data.items[0].liveStreamingDetails?.activeLiveChatId;
@@ -213,13 +292,15 @@ class YouTubeChatBot {
 
     // Start continuous monitoring
     async startContinuousMonitoring() {
-        console.log('🤖 YouTube Chat Bot - Cloud Edition');
-        console.log('===================================');
+        console.log('🤖 YouTube Chat Bot - Quota Optimized Edition');
+        console.log('=============================================');
         console.log(`🔧 Bot Name: ${this.config.botName}`);
         console.log(`📺 Channel ID: ${this.config.channelId}`);
+        console.log(`⏰ Streaming Hours: ${this.config.streamingHours.start}:00 - ${this.config.streamingHours.end}:00`);
+        console.log(`📊 Daily Quota Limit: 10,000 units`);
         console.log('🔍 Monitoring for live streams...\n');
         
-        // Check for streams every 2 minutes
+        // Check for streams every 30 minutes
         this.streamCheckInterval = setInterval(async () => {
             const isStreaming = await this.checkIfStreaming();
             
@@ -232,7 +313,7 @@ class YouTubeChatBot {
                     console.log('🎮 Bot is now active in chat!\n');
                 }
             }
-        }, 2 * 60 * 1000); // Check every 2 minutes
+        }, 30 * 60 * 1000); // Check every 30 minutes
 
         // Initial check
         const isStreaming = await this.checkIfStreaming();
@@ -246,9 +327,16 @@ class YouTubeChatBot {
         }
     }
 
-    // Poll for new chat messages
+    // Poll for new chat messages (QUOTA: 5 units per call)
     async pollMessages() {
         if (!this.isRunning || !this.liveChatId) return;
+
+        // Check quota before polling
+        if (!this.canMakeApiCall(5)) {
+            console.log('⚠️ Quota exhausted - stopping chat monitoring');
+            this.isRunning = false;
+            return;
+        }
 
         try {
             const response = await this.youtube.liveChatMessages.list({
@@ -256,6 +344,8 @@ class YouTubeChatBot {
                 part: ['snippet', 'authorDetails'],
                 pageToken: this.nextPageToken
             });
+
+            this.trackQuotaUsage(5);
 
             if (response.data.items) {
                 for (const message of response.data.items) {
@@ -265,8 +355,8 @@ class YouTubeChatBot {
 
             this.nextPageToken = response.data.nextPageToken;
             
-            // Wait before next poll
-            const pollInterval = Math.max(response.data.pollingIntervalMillis || 5000, 2000);
+            // Longer wait between polls to save quota
+            const pollInterval = Math.max(response.data.pollingIntervalMillis || 10000, 8000);
             setTimeout(() => this.pollMessages(), pollInterval);
             
         } catch (error) {
@@ -280,7 +370,7 @@ class YouTubeChatBot {
             }
             
             // Wait and try again
-            setTimeout(() => this.pollMessages(), 10000);
+            setTimeout(() => this.pollMessages(), 15000);
         }
     }
 
@@ -295,87 +385,70 @@ class YouTubeChatBot {
         // Don't respond to own messages
         if (author === this.config.botName) return;
 
-        // Rate limiting - don't respond too frequently
+        // More conservative rate limiting to save quota
         const now = Date.now();
-        if (now - this.lastResponseTime < 3000) return; // Wait 3 seconds between responses
+        if (now - this.lastResponseTime < 15000) return; // Wait 15 seconds between responses
 
         // Generate response
         const response = this.generateResponse(textLower, author);
         
         if (response) {
             this.lastResponseTime = now;
-            // Random delay to seem more human (1-4 seconds)
-            const delay = Math.random() * 3000 + 1000;
+            // Random delay to seem more human (2-8 seconds)
+            const delay = Math.random() * 6000 + 2000;
             setTimeout(() => this.sendMessage(response), delay);
         }
     }
 
-    // Generate appropriate response
+    // Generate appropriate response (more selective)
     generateResponse(text, author) {
         // Admin commands for bot owner
         if (author === this.config.ownerUsername) {
             if (text === '!status') {
-                return `🤖 Bot Status: Active | Stream: ${this.videoId || 'none'} | Uptime: ${Math.floor(process.uptime() / 60)}min`;
+                return `🤖 Bot Status: Active | Quota: ${this.dailyQuotaUsed}/10000 | Stream: ${this.videoId || 'none'}`;
+            }
+            if (text === '!quota') {
+                return `📊 Quota Used: ${this.dailyQuotaUsed}/10000 units | Resets: ${this.quotaResetTime.toLocaleTimeString()}`;
             }
             if (text === '!ping') {
                 return '🏓 Pong!';
             }
             if (text.startsWith('!say ')) {
-                return text.substring(5); // Remove "!say " prefix
+                return text.substring(5);
             }
         }
 
-        // First-time chatters get a warm welcome
-        if (this.containsGreeting(text)) {
+        // More selective responses to save quota
+        
+        // Direct greetings to the bot
+        if (text.includes(this.config.botName.toLowerCase()) || text.includes('hello bot') || text.includes('hi bot')) {
             return this.getRandomResponse(this.responses.greetings);
         }
 
-        // Game reactions based on keywords
-        if (text.includes('amazing') || text.includes('awesome') || text.includes('incredible') || text.includes('insane')) {
+        // Only respond to very specific keywords
+        if (text.includes('amazing play') || text.includes('insane play') || text.includes('incredible play')) {
             return this.getRandomResponse(this.responses.reactions.amazing);
         }
 
-        if (text.includes('fail') || text.includes('died') || text.includes('dead') || text.includes('rip')) {
+        if (text.includes('epic fail') || text.includes('big fail')) {
             return this.getRandomResponse(this.responses.reactions.fail);
         }
 
-        if (text.includes('clutch') || text.includes('close') || text.includes('barely') || text.includes('1hp')) {
+        if (text.includes('clutch play') || text.includes('clutch win')) {
             return this.getRandomResponse(this.responses.reactions.clutch);
         }
 
-        if (text.includes('lol') || text.includes('funny') || text.includes('haha') || text.includes('lmao')) {
-            return this.getRandomResponse(this.responses.reactions.funny);
-        }
-
-        if (text.includes('give up') || text.includes('hard') || text.includes('difficult')) {
-            return this.getRandomResponse(this.responses.encouragement);
-        }
-
-        // Common questions
-        if (text.includes('how are you') || text.includes('how you doing')) {
-            return "I'm doing great! Thanks for asking! How are you enjoying the stream? 😊";
-        }
-
-        if (text.includes('what game') || text.includes('game name')) {
-            return "This game looks amazing! I love watching these streams! 🎮";
-        }
-
+        // Questions directed at bot
         if (text.includes('bot') && (text.includes('are you') || text.includes('real'))) {
-            return "Yep, I'm a bot! 🤖 But I'm here to hang out and enjoy the stream with everyone!";
+            return "Yep, I'm a bot! 🤖 Here to enjoy the stream with everyone!";
         }
 
-        // New follower celebrations
-        if (text.includes('new follower') || text.includes('just followed')) {
-            return "Welcome to the community! 🎉";
-        }
-
-        // Randomly engage with active chat (2% chance)
-        if (Math.random() < 0.02) {
+        // Reduce random engagement to 0.5% to save quota
+        if (Math.random() < 0.005) {
             const randomEngagements = [
-                `Hey ${author}! 👋`,
                 "This stream is so good! 🔥",
-                "Anyone else loving this gameplay?",
-                "Chat is so active today! Love it! ❤️"
+                "Great gameplay! 🎮",
+                "Love the energy in chat! ❤️"
             ];
             return this.getRandomResponse(randomEngagements);
         }
@@ -397,8 +470,14 @@ class YouTubeChatBot {
         return responses[Math.floor(Math.random() * responses.length)];
     }
 
-    // Send message to chat
+    // Send message to chat (QUOTA: 50 units)
     async sendMessage(message) {
+        // Check quota before sending
+        if (!this.canMakeApiCall(50)) {
+            console.log(`🤐 Would send: ${message} (but quota limit reached)`);
+            return;
+        }
+
         // Check if we have OAuth tokens to send messages
         if (!process.env.OAUTH_TOKENS) {
             console.log(`🤐 Would send: ${message} (but no OAuth tokens configured)`);
@@ -419,6 +498,7 @@ class YouTubeChatBot {
                 }
             });
 
+            this.trackQuotaUsage(50);
             console.log(`🤖 ${this.config.botName}: ${message}`);
             
         } catch (error) {
@@ -458,22 +538,20 @@ function validateEnvironment() {
     
     if (!process.env.OAUTH_TOKENS) {
         console.warn('⚠️ OAUTH_TOKENS not set. Bot will only read chat, not send messages.');
-        console.warn('💡 Run locally first to get OAuth tokens, then add them to environment.');
     }
 }
 
 // Main function
 async function main() {
     try {
-        // Validate environment
         validateEnvironment();
         
-        // Start bot
         const bot = new YouTubeChatBot();
         await bot.startContinuousMonitoring();
         
-        console.log('✅ Bot is running in cloud mode!');
-        console.log('🔄 Will automatically connect when you go live');
+        console.log('✅ Bot is running in quota-optimized mode!');
+        console.log('🔄 Will check for streams every 30 minutes during streaming hours');
+        console.log('📊 Daily quota limit: 10,000 units');
         console.log('🌐 Check bot status at your hosting URL\n');
         
     } catch (error) {
