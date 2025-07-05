@@ -11,25 +11,56 @@ class YouTubeChatBot {
             clientSecret: process.env.YOUTUBE_CLIENT_SECRET,
             channelId: process.env.YOUTUBE_CHANNEL_ID,
             botName: process.env.BOT_NAME || 'GameBuddy',
-            ownerUsername: process.env.OWNER_USERNAME || '',
+            ownerUsername: process.env.OWNER_USERNAME || '', // Your YouTube username
             redirectUri: "urn:ietf:wg:oauth:2.0:oob"
         };
 
-        // Smarter bot responses with context
+        // Bot personality responses
         this.responses = {
             greetings: [
                 "Hey there! Welcome to the stream! 🎮",
-                "What's up! Great to see you here! 🔥",
-                "Welcome to the party! 🚀",
-                "Hey! Thanks for stopping by! 😊"
+                "What's up, gamer! Ready for some epic gameplay?",
+                "Welcome to the party! This is gonna be awesome! 🔥",
+                "Hey! Great to see you here! Let's have some fun!",
+                "Welcome aboard! Hope you enjoy the stream! 🚀"
             ],
             reactions: {
-                amazing: ["That was incredible! 🔥", "AMAZING play!", "No way! How?! 🤯"],
-                fail: ["Ouch! 😅", "We've all been there!", "Next time! 💪"],
-                clutch: ["CLUTCH! 🔥", "That was close!", "Heart attack moment! 😱"],
-                funny: ["LMAO 😂", "That's hilarious!", "LOL! 🤣"]
+                amazing: [
+                    "That was incredible! 🔥",
+                    "No way! How did you do that?!",
+                    "AMAZING play!",
+                    "Absolutely insane! 🤯",
+                    "Pro gamer move right there!"
+                ],
+                fail: [
+                    "Ouch! That hurt to watch 😅",
+                    "We've all been there!",
+                    "Better luck next time!",
+                    "F in the chat",
+                    "Don't worry, you got this next time!"
+                ],
+                clutch: [
+                    "CLUTCH! 🔥",
+                    "That was so close!",
+                    "Heart attack moment right there!",
+                    "How did you pull that off?!",
+                    "Insane clutch play!"
+                ],
+                funny: [
+                    "LMAO 😂",
+                    "That's hilarious!",
+                    "I can't stop laughing!",
+                    "Comedy gold right there!",
+                    "LOL that was great!"
+                ]
             },
-            encouragement: ["You got this! 💪", "Keep going!", "Don't give up! ⭐"]
+            encouragement: [
+                "You got this! 💪",
+                "Keep going, you're doing great!",
+                "Don't give up!",
+                "Believe in yourself!",
+                "You're getting better every game!"
+            ]
         };
 
         this.youtube = google.youtube('v3');
@@ -40,12 +71,6 @@ class YouTubeChatBot {
         this.videoId = null;
         this.streamCheckInterval = null;
         this.lastResponseTime = 0;
-        
-        // Smart features
-        this.chatHistory = new Map(); // Track users
-        this.responseCount = 0; // Track bot activity
-        this.maxResponsesPerHour = 20; // Limit responses
-        this.hourlyReset = Date.now();
         
         this.setupOAuth();
         this.setupWebServer();
@@ -65,7 +90,6 @@ class YouTubeChatBot {
                 isMonitoring: this.isRunning,
                 currentStream: this.videoId || 'none',
                 uptime: process.uptime(),
-                responsesThisHour: this.responseCount,
                 timestamp: new Date().toISOString()
             }, null, 2));
         });
@@ -74,18 +98,20 @@ class YouTubeChatBot {
             console.log(`🌐 Bot status server running on port ${PORT}`);
         });
 
+        // Keep service alive (for Railway/Render)
         this.setupKeepAlive();
     }
 
     setupKeepAlive() {
         setInterval(() => {
+            // Ping self to prevent sleeping on free hosting
             const domain = process.env.RAILWAY_PUBLIC_DOMAIN || process.env.RENDER_EXTERNAL_URL;
             if (domain) {
                 axios.get(`https://${domain}`)
                     .then(() => console.log('🏓 Keep-alive ping'))
-                    .catch(() => {});
+                    .catch(() => {}); // Ignore errors
             }
-        }, 25 * 60 * 1000);
+        }, 25 * 60 * 1000); // Every 25 minutes
     }
 
     setupOAuth() {
@@ -95,6 +121,7 @@ class YouTubeChatBot {
             this.config.redirectUri
         );
         
+        // Load OAuth tokens from environment
         if (process.env.OAUTH_TOKENS) {
             try {
                 const tokens = JSON.parse(process.env.OAUTH_TOKENS);
@@ -110,17 +137,7 @@ class YouTubeChatBot {
         google.options({ auth: this.oauth2Client });
     }
 
-    // Reset hourly response counter
-    resetHourlyCounter() {
-        const now = Date.now();
-        if (now - this.hourlyReset > 3600000) { // 1 hour
-            this.responseCount = 0;
-            this.hourlyReset = now;
-            console.log('🔄 Hourly response counter reset');
-        }
-    }
-
-    // Check if currently streaming (with better filtering)
+    // Check if currently streaming
     async checkIfStreaming() {
         try {
             const response = await axios.get('https://www.googleapis.com/youtube/v3/search', {
@@ -130,8 +147,7 @@ class YouTubeChatBot {
                     eventType: 'live',
                     type: 'video',
                     key: this.config.apiKey,
-                    maxResults: 1,
-                    order: 'date' // Get most recent live stream
+                    maxResults: 1
                 }
             });
 
@@ -144,11 +160,6 @@ class YouTubeChatBot {
                     console.log(`🎥 New live stream detected!`);
                     console.log(`📺 Video ID: ${this.videoId}`);
                     console.log(`🎬 Title: ${title}`);
-                    
-                    // Reset response counters for new stream
-                    this.responseCount = 0;
-                    this.chatHistory.clear();
-                    
                     return true;
                 }
                 return this.videoId !== null;
@@ -165,6 +176,7 @@ class YouTubeChatBot {
         }
     }
 
+    // Get live chat ID from video
     async getLiveChatId() {
         try {
             const response = await this.youtube.videos.list({
@@ -191,26 +203,24 @@ class YouTubeChatBot {
         }
     }
 
+    // Clean up when stream ends
     cleanup() {
         this.videoId = null;
         this.liveChatId = null;
         this.nextPageToken = null;
         this.isRunning = false;
-        this.responseCount = 0;
-        this.chatHistory.clear();
     }
 
+    // Start continuous monitoring
     async startContinuousMonitoring() {
-        console.log('🤖 YouTube Chat Bot - Smart Edition');
+        console.log('🤖 YouTube Chat Bot - Cloud Edition');
         console.log('===================================');
         console.log(`🔧 Bot Name: ${this.config.botName}`);
         console.log(`📺 Channel ID: ${this.config.channelId}`);
-        console.log(`⚙️ Max responses/hour: ${this.maxResponsesPerHour}`);
         console.log('🔍 Monitoring for live streams...\n');
         
         // Check for streams every 2 minutes
         this.streamCheckInterval = setInterval(async () => {
-            this.resetHourlyCounter();
             const isStreaming = await this.checkIfStreaming();
             
             if (isStreaming && !this.isRunning) {
@@ -222,7 +232,7 @@ class YouTubeChatBot {
                     console.log('🎮 Bot is now active in chat!\n');
                 }
             }
-        }, 2 * 60 * 1000);
+        }, 2 * 60 * 1000); // Check every 2 minutes
 
         // Initial check
         const isStreaming = await this.checkIfStreaming();
@@ -236,6 +246,7 @@ class YouTubeChatBot {
         }
     }
 
+    // Poll for new chat messages
     async pollMessages() {
         if (!this.isRunning || !this.liveChatId) return;
 
@@ -254,22 +265,26 @@ class YouTubeChatBot {
 
             this.nextPageToken = response.data.nextPageToken;
             
+            // Wait before next poll
             const pollInterval = Math.max(response.data.pollingIntervalMillis || 5000, 2000);
             setTimeout(() => this.pollMessages(), pollInterval);
             
         } catch (error) {
             console.error('Error polling messages:', error.message);
             
+            // If stream ended or chat disabled
             if (error.message.includes('disabled') || error.message.includes('not found')) {
                 console.log('📺 Stream ended or chat disabled');
                 this.cleanup();
                 return;
             }
             
+            // Wait and try again
             setTimeout(() => this.pollMessages(), 10000);
         }
     }
 
+    // Process incoming chat message
     async processMessage(message) {
         const author = message.authorDetails.displayName;
         const text = message.snippet.displayMessage;
@@ -280,145 +295,111 @@ class YouTubeChatBot {
         // Don't respond to own messages
         if (author === this.config.botName) return;
 
-        // Track user
-        this.trackUser(author, textLower);
-
-        // Reset hourly counter
-        this.resetHourlyCounter();
-
-        // Check if we've hit response limit
-        if (this.responseCount >= this.maxResponsesPerHour) {
-            console.log('⏱️ Response limit reached for this hour');
-            return;
-        }
-
-        // Smart rate limiting (FIXED!)
+        // Rate limiting - don't respond too frequently
         const now = Date.now();
-        if (now - this.lastResponseTime < 5000) return; // 5 seconds between responses
+        if (now - this.lastResponseTime < 3000) return; // Wait 3 seconds between responses
 
-        // Generate smart response
-        const response = this.generateSmartResponse(textLower, author);
+        // Generate response
+        const response = this.generateResponse(textLower, author);
         
         if (response) {
             this.lastResponseTime = now;
-            this.responseCount++;
-            
-            // Human-like delay (2-6 seconds)
-            const delay = Math.random() * 4000 + 2000;
+            // Random delay to seem more human (1-4 seconds)
+            const delay = Math.random() * 3000 + 1000;
             setTimeout(() => this.sendMessage(response), delay);
         }
     }
 
-    trackUser(author, text) {
-        if (!this.chatHistory.has(author)) {
-            this.chatHistory.set(author, {
-                messageCount: 1,
-                firstSeen: Date.now(),
-                isNew: true
-            });
-        } else {
-            const userData = this.chatHistory.get(author);
-            userData.messageCount++;
-            userData.isNew = false;
-            this.chatHistory.set(author, userData);
-        }
-    }
-
-    generateSmartResponse(text, author) {
-        // Admin commands (FIXED - only for owner!)
+    // Generate appropriate response
+    generateResponse(text, author) {
+        // Admin commands for bot owner
         if (author === this.config.ownerUsername) {
             if (text === '!status') {
-                return `🤖 Status: Active | Stream: ${this.videoId || 'none'} | Responses: ${this.responseCount}/${this.maxResponsesPerHour}`;
+                return `🤖 Bot Status: Active | Stream: ${this.videoId || 'none'} | Uptime: ${Math.floor(process.uptime() / 60)}min`;
             }
             if (text === '!ping') {
                 return '🏓 Pong!';
             }
             if (text.startsWith('!say ')) {
-                return text.substring(5);
-            }
-            if (text === '!quiet') {
-                this.maxResponsesPerHour = 5;
-                return '🤖 Set to quiet mode (5 responses/hour)';
-            }
-            if (text === '!active') {
-                this.maxResponsesPerHour = 30;
-                return '🤖 Set to active mode (30 responses/hour)';
-            }
-            if (text === '!normal') {
-                this.maxResponsesPerHour = 20;
-                return '🤖 Set to normal mode (20 responses/hour)';
+                return text.substring(5); // Remove "!say " prefix
             }
         }
 
-        const userData = this.chatHistory.get(author);
-
-        // Welcome new chatters with greetings
-        if (this.containsGreeting(text) && userData.isNew) {
+        // First-time chatters get a warm welcome
+        if (this.containsGreeting(text)) {
             return this.getRandomResponse(this.responses.greetings);
         }
 
-        // Smart keyword responses (more selective)
-        if (text.includes('amazing') || text.includes('incredible') || text.includes('insane')) {
-            if (Math.random() < 0.3) { // 30% chance
-                return this.getRandomResponse(this.responses.reactions.amazing);
-            }
+        // Game reactions based on keywords
+        if (text.includes('amazing') || text.includes('awesome') || text.includes('incredible') || text.includes('insane')) {
+            return this.getRandomResponse(this.responses.reactions.amazing);
         }
 
-        if (text.includes('fail') || text.includes('died') || text.includes('rip')) {
-            if (Math.random() < 0.2) { // 20% chance
-                return this.getRandomResponse(this.responses.reactions.fail);
-            }
+        if (text.includes('fail') || text.includes('died') || text.includes('dead') || text.includes('rip')) {
+            return this.getRandomResponse(this.responses.reactions.fail);
         }
 
-        if (text.includes('clutch') || text.includes('close call')) {
-            if (Math.random() < 0.4) { // 40% chance for exciting moments
-                return this.getRandomResponse(this.responses.reactions.clutch);
-            }
+        if (text.includes('clutch') || text.includes('close') || text.includes('barely') || text.includes('1hp')) {
+            return this.getRandomResponse(this.responses.reactions.clutch);
         }
 
-        if (text.includes('funny') || text.includes('lol') || text.includes('haha')) {
-            if (Math.random() < 0.25) { // 25% chance
-                return this.getRandomResponse(this.responses.reactions.funny);
-            }
+        if (text.includes('lol') || text.includes('funny') || text.includes('haha') || text.includes('lmao')) {
+            return this.getRandomResponse(this.responses.reactions.funny);
         }
 
-        // Questions get higher priority
-        if (text.includes('how are you')) {
+        if (text.includes('give up') || text.includes('hard') || text.includes('difficult')) {
+            return this.getRandomResponse(this.responses.encouragement);
+        }
+
+        // Common questions
+        if (text.includes('how are you') || text.includes('how you doing')) {
             return "I'm doing great! Thanks for asking! How are you enjoying the stream? 😊";
         }
 
-        if (text.includes('what game')) {
+        if (text.includes('what game') || text.includes('game name')) {
             return "This game looks amazing! I love watching these streams! 🎮";
         }
 
-        // Bot questions
         if (text.includes('bot') && (text.includes('are you') || text.includes('real'))) {
             return "Yep, I'm a bot! 🤖 But I'm here to hang out and enjoy the stream with everyone!";
         }
 
-        // MUCH lower random engagement (FIXED!)
-        if (Math.random() < 0.05) { // Only 5% chance, not 40%!
+        // New follower celebrations
+        if (text.includes('new follower') || text.includes('just followed')) {
+            return "Welcome to the community! 🎉";
+        }
+
+        // Randomly engage with active chat (2% chance)
+        if (Math.random() < 0.02) {
             const randomEngagements = [
-                "This stream is awesome! 🔥",
-                "Great community here! ❤️",
-                "Loving the gameplay! 🎮"
+                `Hey ${author}! 👋`,
+                "This stream is so good! 🔥",
+                "Anyone else loving this gameplay?",
+                "Chat is so active today! Love it! ❤️"
             ];
             return this.getRandomResponse(randomEngagements);
         }
 
-        return null; // No response (most of the time)
+        return null; // No response
     }
 
+    // Check if message contains greeting
     containsGreeting(text) {
-        const greetings = ['hello', 'hi', 'hey', 'sup', 'what\'s up', 'good morning', 'good evening'];
+        const greetings = [
+            'hello', 'hi', 'hey', 'sup', 'what\'s up', 'good morning', 
+            'good evening', 'good afternoon', 'yo', 'hiya', 'howdy'
+        ];
         return greetings.some(greeting => text.includes(greeting));
     }
 
+    // Get random response from array
     getRandomResponse(responses) {
         return responses[Math.floor(Math.random() * responses.length)];
     }
 
+    // Send message to chat
     async sendMessage(message) {
+        // Check if we have OAuth tokens to send messages
         if (!process.env.OAUTH_TOKENS) {
             console.log(`🤐 Would send: ${message} (but no OAuth tokens configured)`);
             return;
@@ -445,6 +426,7 @@ class YouTubeChatBot {
         }
     }
 
+    // Stop the bot
     stop() {
         this.isRunning = false;
         if (this.streamCheckInterval) {
@@ -483,14 +465,16 @@ function validateEnvironment() {
 // Main function
 async function main() {
     try {
+        // Validate environment
         validateEnvironment();
         
+        // Start bot
         const bot = new YouTubeChatBot();
         await bot.startContinuousMonitoring();
         
-        console.log('✅ Bot is running in smart mode!');
+        console.log('✅ Bot is running in cloud mode!');
         console.log('🔄 Will automatically connect when you go live');
-        console.log('🧠 Smart response system active\n');
+        console.log('🌐 Check bot status at your hosting URL\n');
         
     } catch (error) {
         console.error('❌ Bot failed to start:', error.message);
@@ -498,6 +482,7 @@ async function main() {
     }
 }
 
+// Handle graceful shutdown
 process.on('SIGINT', () => {
     console.log('\n👋 Bot shutting down gracefully...');
     process.exit(0);
@@ -508,6 +493,7 @@ process.on('SIGTERM', () => {
     process.exit(0);
 });
 
+// Start the bot
 main();
 
 module.exports = YouTubeChatBot;
