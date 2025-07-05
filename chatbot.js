@@ -193,7 +193,8 @@ class YouTubeChatBot {
             console.warn('⚠️ No OAuth tokens found. Bot will only read chat, not send messages.');
         }
         
-        google.options({ auth: this.oauth2Client });
+        // Don't set global auth - we'll specify auth per request
+        // google.options({ auth: this.oauth2Client });
     }
 
     // Check if currently streaming (QUOTA: 100 units)
@@ -210,15 +211,15 @@ class YouTubeChatBot {
         }
 
         try {
-            const response = await axios.get('https://www.googleapis.com/youtube/v3/search', {
-                params: {
-                    part: 'snippet',
-                    channelId: this.config.channelId,
-                    eventType: 'live',
-                    type: 'video',
-                    key: this.config.apiKey,
-                    maxResults: 1
-                }
+            // Use direct YouTube API call without OAuth for search
+            const response = await this.youtube.search.list({
+                part: ['snippet'],
+                channelId: this.config.channelId,
+                eventType: 'live',
+                type: 'video',
+                key: this.config.apiKey,
+                maxResults: 1,
+                auth: null // Explicitly use API key, not OAuth
             });
 
             this.trackQuotaUsage(100); // Track quota usage
@@ -244,6 +245,9 @@ class YouTubeChatBot {
             }
         } catch (error) {
             console.error('Error checking stream status:', error.message);
+            if (error.response) {
+                console.error('API Error Details:', error.response.data);
+            }
             return false;
         }
     }
@@ -259,7 +263,8 @@ class YouTubeChatBot {
             const response = await this.youtube.videos.list({
                 part: ['liveStreamingDetails'],
                 id: [this.videoId],
-                key: this.config.apiKey
+                key: this.config.apiKey,
+                auth: null // Use API key for this call
             });
 
             this.trackQuotaUsage(1);
@@ -278,6 +283,9 @@ class YouTubeChatBot {
             return false;
         } catch (error) {
             console.error('Error getting live chat ID:', error.message);
+            if (error.response) {
+                console.error('API Error Details:', error.response.data);
+            }
             return false;
         }
     }
@@ -342,7 +350,8 @@ class YouTubeChatBot {
             const response = await this.youtube.liveChatMessages.list({
                 liveChatId: this.liveChatId,
                 part: ['snippet', 'authorDetails'],
-                pageToken: this.nextPageToken
+                pageToken: this.nextPageToken,
+                auth: this.oauth2Client // Use OAuth for chat operations
             });
 
             this.trackQuotaUsage(5);
@@ -487,6 +496,7 @@ class YouTubeChatBot {
         try {
             await this.youtube.liveChatMessages.insert({
                 part: ['snippet'],
+                auth: this.oauth2Client, // Use OAuth for sending messages
                 requestBody: {
                     snippet: {
                         liveChatId: this.liveChatId,
